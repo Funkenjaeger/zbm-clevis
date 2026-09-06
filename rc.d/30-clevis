@@ -1,0 +1,43 @@
+#!/bin/sh
+# Runs INSIDE the build container, before generate-zbm.
+# Stages the Clevis JWE and the decrypt timeout that get baked into the image
+# by mkinitcpio.conf.d/20-clevis.conf's FILES+=().
+#
+# build.sh copies ${JWE_FILE} into the staging directory as /build/clevis.jwe,
+# so this script always looks at one fixed path.
+set -e
+
+# shellcheck disable=SC1091
+[ -r /build/local.conf ] && . /build/local.conf
+: "${CLEVIS_TIMEOUT:=15}"
+
+SRC=/build/clevis.jwe
+[ -r "$SRC" ] || { echo "FAIL: $SRC not readable (build.sh should have staged it)"; exit 1; }
+[ -s "$SRC" ] || { echo "FAIL: $SRC is empty"; exit 1; }
+
+mkdir -p /etc/zbm-clevis
+cp "$SRC" /etc/zbm-clevis/clevis.jwe
+chmod 600 /etc/zbm-clevis/clevis.jwe
+cmp -s "$SRC" /etc/zbm-clevis/clevis.jwe || { echo "FAIL: copy mismatch"; exit 1; }
+
+# The hook reads this at runtime. Baking a file rather than sed'ing the hook
+# script keeps the tracked hook byte-identical to what ships in the image, and
+# means the timeout can be inspected from a running ZFSBootMenu shell.
+case "${CLEVIS_TIMEOUT}" in
+  ''|*[!0-9]*) echo "FAIL: CLEVIS_TIMEOUT='${CLEVIS_TIMEOUT}' is not a positive integer"; exit 1 ;;
+esac
+printf '%s\n' "${CLEVIS_TIMEOUT}" > /etc/zbm-clevis/timeout
+chmod 644 /etc/zbm-clevis/timeout
+
+echo "OK: /etc/zbm-clevis/clevis.jwe ($(wc -c < /etc/zbm-clevis/clevis.jwe) bytes, sha256 $(sha256sum < /etc/zbm-clevis/clevis.jwe | cut -c1-16)...), timeout=${CLEVIS_TIMEOUT}s"
+
+# The image is useless if any of these did not make it into the container.
+for b in clevis clevis-decrypt clevis-decrypt-tang jose curl timeout; do
+  command -v "$b" >/dev/null 2>&1 || { echo "FAIL: $b not found in container"; exit 1; }
+done
+# Optional pins: warn only, so a future clevis package that drops one of them
+# does not break the build.
+for b in clevis-decrypt-sss clevis-decrypt-null; do
+  command -v "$b" >/dev/null 2>&1 || echo "WARN: $b not found; remove it from mkinitcpio.conf.d/20-clevis.conf"
+done
+echo "OK: clevis toolchain present"

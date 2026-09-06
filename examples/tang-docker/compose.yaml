@@ -1,0 +1,20 @@
+services:
+  tang:
+    container_name: tang
+    build: .
+    user: "100:101"
+    ports:
+      # IMPORTANT: bind to ONE address on the network you trust, not 0.0.0.0.
+      # Replace <trusted-lan-ip> with the host address that the machines you
+      # want to self-unlock can reach -- and that nothing else can. A Tang
+      # server exposed more widely turns the JWE on the target's unencrypted
+      # ESP into a plaintext passphrase for anyone who can route to it.
+      #   - "<trusted-lan-ip>:7500:7500"
+      - "127.0.0.1:7500:7500"
+    volumes:
+      # Tang's key material. Create it first, owned by the same numeric ids as
+      # the container user and not world-readable:
+      #   mkdir -p ./db && chmod 700 ./db && chown 100:101 ./db
+      # Back this directory up: losing it means re-enrolling every client.
+      - "./db:/db"
+    restart: unless-stopped

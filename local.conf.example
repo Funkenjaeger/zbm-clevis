@@ -1,0 +1,106 @@
+# zbm-clevis local configuration.
+#
+#   cp local.conf.example local.conf   and edit.
+#
+# local.conf is read in two places:
+#   * on the build host, by build.sh and zbm-builder.conf (to assemble the
+#     kernel command line and pick the JWE);
+#   * inside the build container, by the rc.d/ scripts (which see the staging
+#     directory as /build).
+# It is a plain shell fragment: only NAME=value lines and comments. It is
+# .gitignore'd, because its values are specific to one machine.
+
+# ---------------------------------------------------------------------------
+# NET_IFACE
+#   Interface name that ZFSBootMenu's `net` hook should bring up with DHCP.
+#   It is used to build `ip=:::::${NET_IFACE}:dhcp` on the kernel command line.
+#   The command line also carries net.ifnames=0 biosdevname=0, so the first
+#   wired NIC is `eth0` *inside ZFSBootMenu only*; the booted OS is unaffected
+#   because it has its own command line. If you would rather keep predictable
+#   names, drop those two tokens from config.yaml and set NET_IFACE to the real
+#   name (enp1s0, eno1, ...).
+NET_IFACE=eth0
+
+# ---------------------------------------------------------------------------
+# NET_TIMEOUT
+#   Seconds klibc `ipconfig` may spend trying to get a DHCP lease. Upstream
+#   mkinitcpio-nfs-utils passes no timeout at all and ipconfig then retries
+#   forever, so an image booted on a dead network would hang instead of
+#   reaching the passphrase prompt. rc.d/20-net-timeout patches `-t` in.
+#   20 s is comfortable for a switch that does STP learning; lower it to 10 if
+#   your link comes up fast and you want the fallback prompt sooner.
+NET_TIMEOUT=20
+
+# ---------------------------------------------------------------------------
+# DROPBEAR_PORT
+#   TCP port dropbear listens on inside ZFSBootMenu. Use something other than
+#   22 so your SSH client's known_hosts entry for the booted OS does not
+#   collide with the pre-boot host keys. rc.d/10-dropbear writes
+#   /etc/dropbear/dropbear.conf from this value.
+DROPBEAR_PORT=222
+
+# ---------------------------------------------------------------------------
+# EXTRA_MODULES
+#   Extra kernel modules to force into the image, space separated, appended to
+#   the virtio set in mkinitcpio.conf.d/00-generic.conf. The image is built
+#   host-generically (no `autodetect`), so you normally need nothing here --
+#   but if your NIC or disk controller driver is a module in the build
+#   container's kernel and is not pulled in by the default hooks, name it.
+#   Drivers compiled into the kernel (=y) have no .ko and must NOT be listed;
+#   mkinitcpio will fail on a missing module.
+EXTRA_MODULES=""
+
+# ---------------------------------------------------------------------------
+# JWE_FILE
+#   Path (relative to the repository root, or absolute) of the Clevis JWE that
+#   `./build.sh clevis` bakes into the image at /etc/zbm-clevis/clevis.jwe.
+#   Produce it with scripts/enroll.sh on the machine that owns the pool.
+#   The file is .gitignore'd by the *.jwe rule; keep it out of git anyway --
+#   on an unencrypted ESP it is only as safe as your Tang server's reachability.
+JWE_FILE=clevis.jwe
+
+# ---------------------------------------------------------------------------
+# CLEVIS_TIMEOUT
+#   Seconds the load-key hook will wait for `clevis decrypt` before giving up
+#   and letting ZFSBootMenu fall through to its passphrase prompt.
+#   This bound matters: clevis-decrypt-tang shells out to curl with no timeout
+#   of its own, so a Tang address that blackholes packets (dropped, not
+#   refused) would otherwise hang the boot indefinitely. A refused connection
+#   fails in milliseconds; this value only governs the blackhole case.
+#   Written to /etc/zbm-clevis/timeout at build time and read by the hook.
+CLEVIS_TIMEOUT=15
+
+# ---------------------------------------------------------------------------
+# EXTRA_KCL
+#   Extra tokens appended to ZFSBootMenu's own kernel command line (NOT the
+#   command line of the OS you boot into). Examples:
+#     EXTRA_KCL="zbm.timeout=10"        wait 10 s at the ZBM menu
+#     EXTRA_KCL="spl.spl_hostid=0x0"    force the hostid from the command line
+#     EXTRA_KCL="zbm.show"              always show the menu
+EXTRA_KCL=""
+
+# ---------------------------------------------------------------------------
+# ./hostid   (a file, not a variable -- documented here because it belongs to
+#             the same "identity of this one machine" bucket)
+#
+# ZFS records the hostid of the system that last imported a pool and treats a
+# different hostid as "in use by another host". ZFSBootMenu's default import
+# policy copes with that (it retries the import using the pool's own recorded
+# hostid), so a mismatch is not fatal -- but carrying the target's real hostid
+# avoids that forced re-import, avoids stamping the pool with a foreign hostid
+# that the booted OS then has to reconcile, and is what the ZBM docs expect.
+# zbm-builder.sh copies the BUILD host's /etc/hostid if ./hostid is absent;
+# build.sh refuses to build in that case, because the build host is almost
+# never the target.
+#
+# Find the value the pool expects, on the target machine:
+#     zdb -C <pool> | grep hostid          # the pool's on-disk hostid
+#     grep -o 'spl[._]hostid=[^ ]*' /proc/cmdline   # what the running BE uses
+# Beware: /etc/hostid on the target may disagree with both of the above; the
+# pool's recorded value (and any spl_hostid= on the command line) is what wins.
+#
+# /etc/hostid is 4 raw bytes, little endian. For a hostid of 0x0abcdef0:
+#     printf '\xf0\xde\xbc\x0a' > hostid
+# or, generically, from the hex digits:
+#     python3 -c 'import struct,sys; sys.stdout.buffer.write(struct.pack("<I", 0x0abcdef0))' > hostid
+# Verify with:  od -An -tx4 hostid   ->  0abcdef0

@@ -1,0 +1,13 @@
+# generate-zbm configuration. Deliberately generic: nothing here identifies a
+# machine. The kernel command line is rewritten at build time by the `-e` yq
+# expressions in zbm-builder.conf, from NET_IFACE / EXTRA_KCL in local.conf.
+Global:
+  InitCPIO: true
+Components:
+  Enabled: false
+EFI:
+  Enabled: true
+  Versions: false
+Kernel:
+  Prefix: zfsbootmenu
+  CommandLine: zfsbootmenu ro quiet loglevel=4 net.ifnames=0 biosdevname=0 ip=:::::eth0:dhcp

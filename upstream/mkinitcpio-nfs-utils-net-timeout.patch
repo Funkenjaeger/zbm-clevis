@@ -1,0 +1,20 @@
+--- a/hooks/net
++++ b/hooks/net
+@@ -28,7 +28,16 @@
+         fi
+ 
+         # setup network and save some values
+-        ipconfig "ip=${ip}"
++        #
++        # klibc ipconfig retries forever when it is given no timeout, so a
++        # boot on a dead or unplugged link never returns from this call.
++        # `net_timeout=<seconds>` on the kernel command line bounds it;
++        # unset preserves the historical (unbounded) behaviour.
++        if [ -n "${net_timeout}" ]; then
++            ipconfig -t "${net_timeout}" "ip=${ip}"
++        else
++            ipconfig "ip=${ip}"
++        fi
+ 
+         for conf in /tmp/net-*.conf; do
+             [ -f "$conf" ] && . "$conf"

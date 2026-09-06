@@ -1,0 +1,22 @@
+# --- secrets and machine identity: never commit ---
+dropbear/*_host_key*
+dropbear/root_key
+*.jwe
+hostid
+
+# --- build products and local configuration ---
+out/
+.stage/
+local.conf
+JWE_SOURCE
+
+# --- test harness artefacts ---
+test/*.img
+test/*.pw
+test/test.conf
+test/shots/
+
+# --- editor / OS noise ---
+*.swp
+*~
+.DS_Store

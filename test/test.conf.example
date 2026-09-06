@@ -1,0 +1,37 @@
+# Copy to test/test.conf and edit. Every value can also be overridden from the
+# environment; test.conf only sets what is not already set.
+#   cp test/test.conf.example test/test.conf
+# test/test.conf is .gitignore'd.
+
+# Raw disk image backing the throwaway test VM.
+: "${IMG:=/var/lib/libvirt/images/zbmtest.img}"
+
+# libvirt domain name and network. The `default` NAT network gives the VM a
+# DHCP lease, which is all these tests need.
+: "${VM:=zbmtest}"
+: "${NET:=default}"
+
+# Throwaway encrypted pool created on the test disk. NEVER name a real pool
+# here: mkdisk.sh creates and exports it, and the scripts assume it is
+# disposable.
+: "${POOL:=zbmtest}"
+
+# Passphrase for that throwaway pool. Not a secret; it exists so that a failed
+# test can be inspected. mkdisk.sh writes it to test/test.pw (mode 0600).
+: "${TEST_PASSPHRASE:=zbm-test-passphrase}"
+
+# Tang advertisement URL the test image was enrolled against. Used by the
+# reachability checks in test/README.md's T2-T4.
+: "${TANG_URL:=http://tang.example:7500}"
+
+# SSH identity whose public key is in dropbear/root_key, and the port dropbear
+# listens on in the image under test (DROPBEAR_PORT from local.conf).
+: "${SSH_KEY:=${HOME}/.ssh/id_ed25519}"
+: "${DROPBEAR_PORT:=222}"
+
+# OVMF firmware for the VM. Paths differ by distribution:
+#   Debian/Ubuntu  /usr/share/OVMF/OVMF_{CODE,VARS}_4M.fd
+#   Fedora         /usr/share/edk2/ovmf/OVMF_{CODE,VARS}.fd
+#   Arch           /usr/share/edk2/x64/OVMF_{CODE,VARS}.4m.fd
+: "${OVMF_CODE:=/usr/share/OVMF/OVMF_CODE_4M.fd}"
+: "${OVMF_VARS:=/usr/share/OVMF/OVMF_VARS_4M.fd}"

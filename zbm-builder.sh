@@ -1,0 +1,297 @@
+#!/bin/bash
+# vim: softtabstop=2 shiftwidth=2 expandtab
+
+# ---------------------------------------------------------------------------
+# VENDORED, UNMODIFIED (except for this comment block) FROM ZFSBOOTMENU.
+#
+#   Source : https://raw.githubusercontent.com/zbm-dev/zfsbootmenu/master/zbm-builder.sh
+#   Project: https://github.com/zbm-dev/zfsbootmenu
+#   Commit : 70bd00819939cb08cf078b5ca0fd381651dd1aae (latest change to this
+#            path as of 2026-09-06; ZFSBootMenu release v3.1.0)
+#   License: MIT, Copyright (c) the ZFSBootMenu contributors -- see LICENSE.
+#
+# Why vendored rather than fetched on demand: it is ~300 lines of MIT-licensed
+# shell that this repository is entirely a client of. Vendoring makes a clone
+# self-contained and reproducible, and makes any future upstream change to the
+# builder show up as a reviewable diff instead of silently altering your build.
+# To refresh it, re-download from the URL above, re-add this block, and check
+# the diff.
+#
+# Nothing below this line is part of zbm-clevis. If you are looking for
+# the configuration this repository actually contributes, see zbm-builder.conf,
+# config.yaml, mkinitcpio.conf.d/, rc.d/ and hooks/.
+# ---------------------------------------------------------------------------
+
+sanitise_path() {
+  local rpath
+  if rpath="$(readlink -f "${1}")" && [ -d "${rpath}" ]; then
+    echo "${rpath}"
+    return 0
+  fi
+
+  return 1
+}
+
+boolean_enabled() {
+  local val="${1:-}"
+
+  case "${val,,}" in
+    yes|y|on|1) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+usage() {
+  cat << EOF
+Build ZFSBootMenu images in an OCI container using podman or docker.
+
+Usage: $0 [options]
+
+OPTIONS:
+
+  -h Display this help text
+
+  -b <path>
+     Use an alternate build directory
+     (Default: current directory)
+
+  -c <config>
+     Specify the path to a configuration file that will be sourced
+     (Default: \${BUILD_DIRECTORY}/zbm-builder.conf, if it exists)
+
+  -d <container-frontend>
+     Use the specified front-end utility to launch the build container
+     (Default: podman if available, docker otherwise)
+
+  -M <argument>
+     Provide a comma-separated list of options to use for volume
+     mounts of the build directory and (if specified) ZFSBootMenu
+     source tree within the build container. For example, specify
+
+       zbm-builder -M z
+
+     to label the volumes for use with SELinux.
+
+     NOTE: An 'ro' option is always added to the volume mounted from
+     the ZFSBootMenu source tree.
+
+  -O <argument>
+     Provide an option to 'podman run' or 'docker run'; if the
+     argument accepts one or more options, use a form with no spaces
+     or make sure each option gets its own '-O', e.g.:
+
+       zbm-builder -O -v -O /boot/efi/EFI/zfsbootmenu:/output
+       zbm-builder -O --volume -O /boot/efi/EFI/zfsbootmenu:/output
+       zbm-builder -O --volume=/boot/efi/EFI/zfsbootmenu:/output
+
+     May be specified multiple times.
+
+  -i <image>
+     Build within the named container image
+     (Default: ghcr.io/zbm-dev/zbm-builder:latest)
+
+  -l <path>
+     Build from ZFSBootMenu source tree at <path>, mounted read-only
+     (Default: fetch upstream source tree inside container)
+
+  -L <path>
+     Build from ZFSBootMenu source tree at <path>, with a temporary
+     read-write overlay atop the tree
+     (Default: fetch upstream source tree inside container)
+
+  -R Remove any existing hostid in the build directory
+
+  -H Do not include host /etc/hostid in image
+     (If ./hostid exists, this switch will be ignored)
+
+  -- <arguments>
+     Additional arguments to the zbm-builder container
+
+For more information, see documentation at
+
+  https://docs.zfsbootmenu.org/
+EOF
+}
+
+SKIP_HOSTID=
+REMOVE_HOST_FILES=
+MOUNT_FLAGS=
+
+# By default, use the latest upstream build container image
+BUILD_IMG="ghcr.io/zbm-dev/zbm-builder:latest"
+
+# By default, build from the current directory
+BUILD_DIRECTORY="${PWD}"
+
+# By default, there is no local repo and it is not overlaid
+BUILD_REPO=
+BUILD_OVERLAY=
+
+# Arguments to the build script
+BUILD_ARGS=()
+
+# Arguments for the container runtime
+RUNTIME_ARGS=()
+
+# Optional configuration file
+CONFIG=
+
+if command -v podman >/dev/null 2>&1; then
+  PODMAN="podman"
+else
+  PODMAN="docker"
+fi
+
+CMDOPTS="b:d:hi:l:L:c:M:O:HR"
+
+# First pass to get build directory and configuration file
+while getopts "${CMDOPTS}" opt; do
+  case "${opt}" in
+    b)
+      BUILD_DIRECTORY="${OPTARG}"
+      ;;
+    c)
+      CONFIG="${OPTARG}"
+      ;;
+    h)
+      usage
+      exit 0
+      ;;
+  esac
+done
+
+# Make sure the build directory is identifiable
+if ! BUILD_DIRECTORY="$( sanitise_path "${BUILD_DIRECTORY}" )"; then
+  echo "ERROR: build directory does not exist"
+  exit 1
+fi
+
+# If a configuration wasn't specified, use a default it one exists
+if [ -z "${CONFIG}" ] && [ -r "${BUILD_DIRECTORY}/zbm-builder.conf" ]; then
+  CONFIG="${BUILD_DIRECTORY}/zbm-builder.conf"
+fi
+
+# Read the optional configuration
+if [ -n "${CONFIG}" ]; then
+  if [ -r "${CONFIG}" ]; then
+    # shellcheck disable=SC1090
+    source "${CONFIG}"
+  else
+    echo "ERROR: non-existent configuration specified"
+    exit 1
+  fi
+fi
+
+OPTIND=1
+while getopts "${CMDOPTS}" opt; do
+  case "${opt}" in
+    # These have already been parsed in first pass
+    b|c|h)
+      ;;
+    d)
+      PODMAN="${OPTARG}"
+      ;;
+    i)
+      BUILD_IMG="${OPTARG}"
+      ;;
+    l)
+      BUILD_REPO="${OPTARG}"
+      BUILD_OVERLAY=""
+      ;;
+    L)
+      BUILD_REPO="${OPTARG}"
+      BUILD_OVERLAY="yes"
+      ;;
+    M)
+      MOUNT_FLAGS="${OPTARG}"
+      ;;
+    O)
+      RUNTIME_ARGS+=( "${OPTARG}" )
+      ;;
+    H)
+      SKIP_HOSTID="yes"
+      ;;
+    R)
+      REMOVE_HOST_FILES="yes"
+      ;;
+    *)
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+# Drop all processed arguments
+shift $((OPTIND-1))
+
+if ! command -v "${PODMAN}" >/dev/null 2>&1; then
+  echo "ERROR: ${PODMAN} not found; use '-d' to specify a container front-end"
+  exit 1
+fi
+
+# Always mount a build directory at /build
+RUNTIME_ARGS+=( "-v" "${BUILD_DIRECTORY}:/build${MOUNT_FLAGS:+:${MOUNT_FLAGS}}" )
+
+# Only mount a local repo at /zbm if specified
+if [ -n "${BUILD_REPO}" ]; then
+  if ! BUILD_REPO="$( sanitise_path "${BUILD_REPO}" )"; then
+    echo "ERROR: local repository does not exist"
+    exit 1
+  fi
+
+  mntopt=""
+  case "${BUILD_OVERLAY,,}" in
+    yes) mntopt="O" ;;
+    *) mntopt="ro" ;;
+  esac
+
+  RUNTIME_ARGS+=( "-v" "${BUILD_REPO}:/zbm:${mntopt}${MOUNT_FLAGS:+,${MOUNT_FLAGS}}" )
+  unset mntopt
+fi
+
+# Remove existing hostid
+if boolean_enabled "${REMOVE_HOST_FILES}" && [ -e "${BUILD_DIRECTORY}/hostid" ]; then
+  if ! rm "${BUILD_DIRECTORY}/hostid"; then
+    echo "ERROR: failed to remove hostid from build directory"
+    exit 1
+  fi
+  echo "Removed hostid by user request"
+fi
+
+# If no local hostid is available, copy the system hostid if desired
+if ! [ -r "${BUILD_DIRECTORY}"/hostid ]; then
+  if ! boolean_enabled "${SKIP_HOSTID}" && [ -r /etc/hostid ]; then
+    if ! cp /etc/hostid "${BUILD_DIRECTORY}"/hostid; then
+      echo "ERROR: unable to copy /etc/hostid"
+      echo "Copy a hostid file to ./hostid or use -H to disable"
+      exit 1
+    fi
+  fi
+fi
+
+# If no config is specified, use in-tree default but force EFI and components
+if ! [ -r "${BUILD_DIRECTORY}"/config.yaml ]; then
+  BUILD_ARGS=(
+    "-e" ".EFI.Enabled=true"
+    "-e" ".Components.Enabled=true"
+    "${BUILD_ARGS[@]}"
+  )
+fi
+
+# Try to include ZBM hooks in the images by default
+if [ -d "${BUILD_DIRECTORY}/hooks" ]; then
+  # Write a dracut configuration snippet
+  mkdir -p "${BUILD_DIRECTORY}/dracut.conf.d"
+  echo "zfsbootmenu_hook_root=/build/hooks" \
+    > "${BUILD_DIRECTORY}/dracut.conf.d/user_hooks.conf"
+
+  # Write a mkinitcpio configuration snippet
+  mkdir -p "${BUILD_DIRECTORY}/mkinitcpio.conf.d"
+  echo "zfsbootmenu_hook_root=/build/hooks" \
+    > "${BUILD_DIRECTORY}/mkinitcpio.conf.d/user_hooks.conf"
+fi
+
+# Make `/build` the working directory so relative paths in configs make sense
+exec "${PODMAN}" run \
+  --rm -w "/build" "${RUNTIME_ARGS[@]}" \
+  "${BUILD_IMG}" "${BUILD_ARGS[@]}" "$@"

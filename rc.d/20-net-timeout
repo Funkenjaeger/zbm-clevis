@@ -1,0 +1,23 @@
+#!/bin/sh
+# Runs INSIDE the build container, before generate-zbm.
+#
+# klibc `ipconfig` retries DHCP forever by default (verified: still trying
+# after 75 s with no DHCP server on the wire). The stock mkinitcpio-nfs-utils
+# `net` runtime hook calls it with no -t, so a ZFSBootMenu image booted on a
+# dead network would sit there instead of falling through to the passphrase
+# prompt. Patch a bounded timeout into the hook before it is baked in.
+#
+# See upstream/ for the patch proposed against mkinitcpio-nfs-utils, which
+# would make this rc.d script unnecessary.
+set -e
+
+# shellcheck disable=SC1091
+[ -r /build/local.conf ] && . /build/local.conf
+: "${NET_TIMEOUT:=20}"
+
+H=/usr/lib/initcpio/hooks/net
+[ -f "$H" ] || { echo "FAIL: $H missing (mkinitcpio-nfs-utils not installed?)"; exit 1; }
+
+sed -i "s|ipconfig \"ip=\${ip}\"|ipconfig -t \"\${net_timeout:-${NET_TIMEOUT}}\" \"ip=\${ip}\"|" "$H"
+grep -q 'net_timeout' "$H" || { echo "FAIL: could not patch $H"; exit 1; }
+echo "OK: net hook patched -> $(grep -n 'ipconfig -t' "$H")"

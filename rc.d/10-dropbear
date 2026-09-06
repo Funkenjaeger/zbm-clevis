@@ -1,0 +1,54 @@
+#!/bin/sh
+# Runs INSIDE the build container, before generate-zbm.
+# Populates /etc/dropbear from the staging directory (/build/dropbear) so the
+# mkinitcpio `dropbear` hook picks up our authorized keys, host keys and port.
+#
+# NOTE (learned the hard way): do NOT symlink /etc/dropbear -> /build/dropbear
+# to make container-generated host keys persist. mkinitcpio's add_file()
+# resolves symlinks, so `add_full_dir /etc/dropbear` would place every file at
+# /build/dropbear/... inside the image and leave /etc/dropbear empty. Dropbear
+# would then start with no host keys and on the default port 22. Copy instead,
+# and copy any freshly generated host keys back out at the end.
+set -e
+
+[ -d /build/dropbear ] || { echo "FAIL: /build/dropbear missing"; exit 1; }
+
+# shellcheck disable=SC1091
+[ -r /build/local.conf ] && . /build/local.conf
+: "${DROPBEAR_PORT:=222}"
+
+rm -rf /etc/dropbear
+mkdir -p /etc/dropbear
+cp -R /build/dropbear/. /etc/dropbear/
+
+# root_key is your authorized_keys for the pre-boot root shell. It is the only
+# way in: dropbear here is key-only, there is no password to guess.
+if [ ! -s /etc/dropbear/root_key ]; then
+  echo "FAIL: dropbear/root_key is missing or empty."
+  echo "      Create it in the repository root before building, e.g.:"
+  echo "          cp ~/.ssh/authorized_keys dropbear/root_key"
+  echo "      or paste the individual public keys that should be able to"
+  echo "      unlock this machine from the ZFSBootMenu prompt, one per line."
+  echo "      It is .gitignore'd; it never belongs in the repository."
+  exit 1
+fi
+
+# dropbear.conf is generated here rather than tracked, so the port lives in
+# exactly one place (local.conf).
+printf 'dropbear_listen=%s\n' "${DROPBEAR_PORT}" > /etc/dropbear/dropbear.conf
+
+# Generate any missing host keys, then persist them back to the staging
+# directory (build.sh copies them into ./dropbear) so every future image keeps
+# the same host key fingerprints and your known_hosts entry stays valid.
+for t in rsa ecdsa ed25519; do
+  k="/etc/dropbear/dropbear_${t}_host_key"
+  [ -s "$k" ] || dropbearkey -t "$t" -f "$k" || echo "WARN: could not generate $t host key"
+  [ -s "$k" ] && cp "$k" "/build/dropbear/dropbear_${t}_host_key"
+done
+
+echo "OK: /etc/dropbear populated; $(wc -l < /etc/dropbear/root_key) authorized keys; listen=${DROPBEAR_PORT}"
+for t in rsa ecdsa ed25519; do
+  k="/etc/dropbear/dropbear_${t}_host_key"
+  [ -s "$k" ] && echo "HOSTKEY ${t}: $(dropbearkey -y -f "$k" 2>/dev/null | sed -n '/^Fingerprint:/{s/Fingerprint: *//;p}')"
+done
+exit 0
